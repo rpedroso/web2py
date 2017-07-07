@@ -1,30 +1,35 @@
 language: python
 
-sudo: false
+sudo: required
 
-cache:
-  directories:
-    - $HOME/.pip-cache/
+cache: pip
 
 python:
-  - '2.6'
   - '2.7'
   - 'pypy'
+  - '3.5'
+  - '3.6'
 
 install:
   - pip install -e .
 
 before_script:
-  - if [[ $TRAVIS_PYTHON_VERSION == '2.6' ]]; then pip install --download-cache $HOME/.pip-cache unittest2; fi
-  - if [[ $TRAVIS_PYTHON_VERSION == '2.7' ]]; then pip install --download-cache $HOME/.pip-cache coverage; fi;
-  - if [[ $TRAVIS_PYTHON_VERSION == '2.7' ]]; then pip install --download-cache $HOME/.pip-cache python-coveralls; fi
+  - pip install coverage
+  - pip install codecov
+  - mysql -e 'create database pydal;'
+  - psql -c 'create database pydal;' -U postgres
+  - psql -c 'create extension postgis;' -U postgres -d pydal;
+  - psql -c 'SHOW SERVER_VERSION' -U postgres
 
 
 script: export COVERAGE_PROCESS_START=gluon/tests/coverage.ini; ./web2py.py --run_system_tests --with_coverage
 
 after_success:
-  - if [[ $TRAVIS_PYTHON_VERSION == '2.7' ]]; then coverage combine; fi
-  - if [[ $TRAVIS_PYTHON_VERSION == '2.7' ]]; then coveralls --config_file=gluon/tests/coverage.ini; fi
+  - coverage combine;
+  - codecov
 
 notifications:
   email: true
+
+addons:
+  postgresql: "9.4"

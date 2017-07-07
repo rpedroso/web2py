@@ -9,21 +9,22 @@
 The widget is called from web2py
 ----------------------------------
 """
+from __future__ import print_function
 
 import datetime
 import sys
-import cStringIO
+from gluon._compat import StringIO, thread, xrange, PY2
 import time
-import thread
 import threading
 import os
+import copy
 import socket
 import signal
 import math
 import logging
-import newcron
 import getpass
-import gluon.main as main
+from gluon import main, newcron
+
 
 from gluon.fileutils import read_file, write_file, create_welcome_w2p
 from gluon.settings import global_settings
@@ -40,8 +41,8 @@ ProgramInfo = '''%s
                  %s
                  %s''' % (ProgramName, ProgramAuthor, ProgramVersion)
 
-if not sys.version[:3] in ['2.5', '2.6', '2.7']:
-    msg = 'Warning: web2py requires Python 2.5, 2.6 or 2.7 but you are running:\n%s'
+if sys.version_info < (2, 7) and (3, 0) < sys.version_info < (3, 5):
+    msg = 'Warning: web2py requires at least Python 2.7/3.5 but you are running:\n%s'
     msg = msg % sys.version
     sys.stderr.write(msg)
 
@@ -54,33 +55,30 @@ def run_system_tests(options):
     """
     import subprocess
     major_version = sys.version_info[0]
-    minor_version = sys.version_info[1]
+    call_args = [sys.executable, '-m', 'unittest', '-v', 'gluon.tests']
     if major_version == 2:
-        if minor_version in (5, 6):
-            sys.stderr.write("Python 2.5 or 2.6\n")
-            ret = subprocess.call(['unit2', '-v', 'gluon.tests'])
-        elif minor_version in (7,):
-            call_args = [sys.executable, '-m', 'unittest', '-v', 'gluon.tests']
-            if options.with_coverage:
-                try:
-                    import coverage
-                    coverage_config = os.environ.get(
-                        "COVERAGE_PROCESS_START",
-                        os.path.join('gluon', 'tests', 'coverage.ini'))
-
-                    call_args = ['coverage', 'run', '--rcfile=%s' %
-                                 coverage_config,
-                                 '-m', 'unittest', '-v', 'gluon.tests']
-                except:
-                    sys.stderr.write('Coverage was not installed, skipping\n')
-            sys.stderr.write("Python 2.7\n")
+        sys.stderr.write("Python 2.7\n")
+    else:
+        sys.stderr.write("Experimental Python 3.x.\n")
+    if options.with_coverage:
+        has_coverage = False
+        coverage_exec = 'coverage2' if major_version == 2 else 'coverage3'
+        try:
+            import coverage
+            has_coverage = True
+        except:
+            sys.stderr.write('Coverage was not installed, skipping\n')
+        coverage_config_file = os.path.join('gluon', 'tests', 'coverage.ini')
+        coverage_config = os.environ.setdefault("COVERAGE_PROCESS_START",
+                                                coverage_config_file)
+        call_args = [coverage_exec, 'run', '--rcfile=%s' %
+                     coverage_config, '-m', 'unittest', '-v', 'gluon.tests']
+        if has_coverage:
             ret = subprocess.call(call_args)
         else:
-            sys.stderr.write("unknown python 2.x version\n")
             ret = 256
     else:
-        sys.stderr.write("Only Python 2.x supported.\n")
-        ret = 256
+        ret = subprocess.call(call_args)
     sys.exit(ret and 1)
 
 
@@ -90,7 +88,7 @@ class IO(object):
     def __init__(self):
         """   """
 
-        self.buffer = cStringIO.StringIO()
+        self.buffer = StringIO()
 
     def write(self, data):
         """   """
@@ -120,14 +118,14 @@ def get_url(host, path='/', proto='http', port=80):
 
 def start_browser(url, startup=False):
     if startup:
-        print 'please visit:'
-        print '\t', url
-        print 'starting browser...'
+        print('please visit:')
+        print('\t', url)
+        print('starting browser...')
     try:
         import webbrowser
         webbrowser.open(url)
     except:
-        print 'warning: unable to detect your browser'
+        print('warning: unable to detect your browser')
 
 
 class web2pyDialog(object):
@@ -136,24 +134,29 @@ class web2pyDialog(object):
     def __init__(self, root, options):
         """ web2pyDialog constructor  """
 
-        import Tkinter
-        import tkMessageBox
+        if PY2:
+            import Tkinter as tkinter
+            import tkMessageBox as messagebox
+        else:
+            import tkinter
+            from tkinter import messagebox
+        
 
         bg_color = 'white'
         root.withdraw()
 
-        self.root = Tkinter.Toplevel(root, bg=bg_color)
-        self.root.resizable(0,0)
+        self.root = tkinter.Toplevel(root, bg=bg_color)
+        self.root.resizable(0, 0)
         self.root.title(ProgramName)
 
         self.options = options
         self.scheduler_processes = {}
-        self.menu = Tkinter.Menu(self.root)
-        servermenu = Tkinter.Menu(self.menu, tearoff=0)
-        httplog = os.path.join(self.options.folder, 'httpserver.log')
-        iconphoto = os.path.join('extras','icons','web2py.gif')
+        self.menu = tkinter.Menu(self.root)
+        servermenu = tkinter.Menu(self.menu, tearoff=0)
+        httplog = os.path.join(self.options.folder, self.options.log_filename)
+        iconphoto = os.path.join('extras', 'icons', 'web2py.gif')
         if os.path.exists(iconphoto):
-            img = Tkinter.PhotoImage(file=iconphoto)
+            img = tkinter.PhotoImage(file=iconphoto)
             self.root.tk.call('wm', 'iconphoto', self.root._w, img)
         # Building the Menu
         item = lambda: start_browser(httplog)
@@ -165,16 +168,16 @@ class web2pyDialog(object):
 
         self.menu.add_cascade(label='Server', menu=servermenu)
 
-        self.pagesmenu = Tkinter.Menu(self.menu, tearoff=0)
+        self.pagesmenu = tkinter.Menu(self.menu, tearoff=0)
         self.menu.add_cascade(label='Pages', menu=self.pagesmenu)
 
         #scheduler menu
-        self.schedmenu = Tkinter.Menu(self.menu, tearoff=0)
+        self.schedmenu = tkinter.Menu(self.menu, tearoff=0)
         self.menu.add_cascade(label='Scheduler', menu=self.schedmenu)
         #start and register schedulers from options
         self.update_schedulers(start=True)
 
-        helpmenu = Tkinter.Menu(self.menu, tearoff=0)
+        helpmenu = tkinter.Menu(self.menu, tearoff=0)
 
         # Home Page
         item = lambda: start_browser('http://www.web2py.com/')
@@ -182,7 +185,7 @@ class web2pyDialog(object):
                              command=item)
 
         # About
-        item = lambda: tkMessageBox.showinfo('About web2py', ProgramInfo)
+        item = lambda: messagebox.showinfo('About web2py', ProgramInfo)
         helpmenu.add_command(label='About',
                              command=item)
 
@@ -196,60 +199,60 @@ class web2pyDialog(object):
         else:
             self.root.protocol('WM_DELETE_WINDOW', self.quit)
 
-        sticky = Tkinter.NW
+        sticky = tkinter.NW
 
         # Prepare the logo area
-        self.logoarea = Tkinter.Canvas(self.root,
+        self.logoarea = tkinter.Canvas(self.root,
                                 background=bg_color,
                                 width=300,
                                 height=300)
         self.logoarea.grid(row=0, column=0, columnspan=4, sticky=sticky)
         self.logoarea.after(1000, self.update_canvas)
 
-        logo = os.path.join('extras','icons','splashlogo.gif')
+        logo = os.path.join('extras', 'icons', 'splashlogo.gif')
         if os.path.exists(logo):
-            img = Tkinter.PhotoImage(file=logo)
-            pnl = Tkinter.Label(self.logoarea, image=img, background=bg_color, bd=0)
+            img = tkinter.PhotoImage(file=logo)
+            pnl = tkinter.Label(self.logoarea, image=img, background=bg_color, bd=0)
             pnl.pack(side='top', fill='both', expand='yes')
             # Prevent garbage collection of img
             pnl.image = img
 
         # Prepare the banner area
-        self.bannerarea = Tkinter.Canvas(self.root,
+        self.bannerarea = tkinter.Canvas(self.root,
                                 bg=bg_color,
                                 width=300,
                                 height=300)
         self.bannerarea.grid(row=1, column=1, columnspan=2, sticky=sticky)
 
-        Tkinter.Label(self.bannerarea, anchor=Tkinter.N,
+        tkinter.Label(self.bannerarea, anchor=tkinter.N,
                       text=str(ProgramVersion + "\n" + ProgramAuthor),
-                      font=('Helvetica', 11), justify=Tkinter.CENTER,
+                      font=('Helvetica', 11), justify=tkinter.CENTER,
                       foreground='#195866', background=bg_color,
-                      height=3).pack( side='top',
-                                      fill='both',
-                                      expand='yes')
+                      height=3).pack(side='top',
+                                     fill='both',
+                                     expand='yes')
 
         self.bannerarea.after(1000, self.update_canvas)
 
         # IP
-        Tkinter.Label(self.root,
+        tkinter.Label(self.root,
                       text='Server IP:', bg=bg_color,
-                      justify=Tkinter.RIGHT).grid(row=4,
+                      justify=tkinter.RIGHT).grid(row=4,
                                                   column=1,
                                                   sticky=sticky)
         self.ips = {}
-        self.selected_ip = Tkinter.StringVar()
+        self.selected_ip = tkinter.StringVar()
         row = 4
         ips = [('127.0.0.1', 'Local (IPv4)')] + \
             ([('::1', 'Local (IPv6)')] if socket.has_ipv6 else []) + \
             [(ip, 'Public') for ip in options.ips] + \
             [('0.0.0.0', 'Public')]
         for ip, legend in ips:
-            self.ips[ip] = Tkinter.Radiobutton(
+            self.ips[ip] = tkinter.Radiobutton(
                 self.root, bg=bg_color, highlightthickness=0,
                 selectcolor='light grey', width=30,
-                anchor=Tkinter.W, text='%s (%s)' % (legend, ip),
-                justify=Tkinter.LEFT,
+                anchor=tkinter.W, text='%s (%s)' % (legend, ip),
+                justify=tkinter.LEFT,
                 variable=self.selected_ip, value=ip)
             self.ips[ip].grid(row=row, column=2, sticky=sticky)
             if row == 4:
@@ -258,30 +261,30 @@ class web2pyDialog(object):
         shift = row
 
         # Port
-        Tkinter.Label(self.root,
+        tkinter.Label(self.root,
                       text='Server Port:', bg=bg_color,
-                      justify=Tkinter.RIGHT).grid(row=shift,
-                                                 column=1, pady=10,
-                                                 sticky=sticky)
+                      justify=tkinter.RIGHT).grid(row=shift,
+                                                  column=1, pady=10,
+                                                  sticky=sticky)
 
-        self.port_number = Tkinter.Entry(self.root)
-        self.port_number.insert(Tkinter.END, self.options.port)
+        self.port_number = tkinter.Entry(self.root)
+        self.port_number.insert(tkinter.END, self.options.port)
         self.port_number.grid(row=shift, column=2, sticky=sticky, pady=10)
 
         # Password
-        Tkinter.Label(self.root,
+        tkinter.Label(self.root,
                       text='Choose Password:', bg=bg_color,
-                      justify=Tkinter.RIGHT).grid(row=shift + 1,
-                                                 column=1,
-                                                 sticky=sticky)
+                      justify=tkinter.RIGHT).grid(row=shift + 1,
+                                                  column=1,
+                                                  sticky=sticky)
 
-        self.password = Tkinter.Entry(self.root, show='*')
+        self.password = tkinter.Entry(self.root, show='*')
         self.password.bind('<Return>', lambda e: self.start())
         self.password.focus_force()
         self.password.grid(row=shift + 1, column=2, sticky=sticky)
 
         # Prepare the canvas
-        self.canvas = Tkinter.Canvas(self.root,
+        self.canvas = tkinter.Canvas(self.root,
                                      width=400,
                                      height=100,
                                      bg='black')
@@ -290,19 +293,19 @@ class web2pyDialog(object):
         self.canvas.after(1000, self.update_canvas)
 
         # Prepare the frame
-        frame = Tkinter.Frame(self.root)
+        frame = tkinter.Frame(self.root)
         frame.grid(row=shift + 3, column=1, columnspan=2, pady=5,
                    sticky=sticky)
 
         # Start button
-        self.button_start = Tkinter.Button(frame,
+        self.button_start = tkinter.Button(frame,
                                            text='start server',
                                            command=self.start)
 
         self.button_start.grid(row=0, column=0, sticky=sticky)
 
         # Stop button
-        self.button_stop = Tkinter.Button(frame,
+        self.button_stop = tkinter.Button(frame,
                                           text='stop server',
                                           command=self.stop)
 
@@ -322,13 +325,14 @@ class web2pyDialog(object):
             self.tb = None
 
     def update_schedulers(self, start=False):
+        applications_folder = os.path.join(self.options.folder, 'applications')
         apps = []
-        available_apps = [arq for arq in os.listdir('applications/')]
-        available_apps = [arq for arq in available_apps
-                          if os.path.exists(
-                'applications/%s/models/scheduler.py' % arq)]
+        available_apps = [
+            arq for arq in os.listdir(applications_folder)
+            if os.path.exists(os.path.join(applications_folder, arq, 'models', 'scheduler.py'))
+        ]
         if start:
-            #the widget takes care of starting the scheduler
+            # the widget takes care of starting the scheduler
             if self.options.scheduler and self.options.with_scheduler:
                 apps = [app.strip() for app
                         in self.options.scheduler.split(',')
@@ -336,8 +340,9 @@ class web2pyDialog(object):
         for app in apps:
             self.try_start_scheduler(app)
 
-        #reset the menu
+        # reset the menu
         self.schedmenu.delete(0, len(available_apps))
+
         for arq in available_apps:
             if arq not in self.scheduler_processes:
                 item = lambda u = arq: self.try_start_scheduler(u)
@@ -354,17 +359,17 @@ class web2pyDialog(object):
         except:
             sys.stderr.write('Sorry, -K only supported for python 2.6-2.7\n')
             return
-        code = "from gluon import current;current._scheduler.loop()"
-        print 'starting scheduler from widget for "%s"...' % app
+        code = "from gluon.globals import current;current._scheduler.loop()"
+        print('starting scheduler from widget for "%s"...' % app)
         args = (app, True, True, None, False, code)
         logging.getLogger().setLevel(self.options.debuglevel)
         p = Process(target=run, args=args)
         self.scheduler_processes[app] = p
         self.update_schedulers()
-        print "Currently running %s scheduler processes" % (
-            len(self.scheduler_processes))
+        print("Currently running %s scheduler processes" % (
+            len(self.scheduler_processes)))
         p.start()
-        print "Processes started"
+        print("Processes started")
 
     def try_stop_scheduler(self, app):
         if app in self.scheduler_processes:
@@ -413,10 +418,12 @@ class web2pyDialog(object):
 
     def connect_pages(self):
         """ Connects pages """
-        #reset the menu
-        available_apps = [arq for arq in os.listdir('applications/')
-                          if os.path.exists(
-                'applications/%s/__init__.py' % arq)]
+        # reset the menu
+        applications_folder = os.path.join(self.options.folder, 'applications')
+        available_apps = [
+            arq for arq in os.listdir(applications_folder)
+            if os.path.exists(os.path.join(applications_folder, arq, '__init__.py'))
+        ]
         self.pagesmenu.delete(0, len(available_apps))
         for arq in available_apps:
             url = self.url + arq
@@ -452,9 +459,12 @@ class web2pyDialog(object):
 
     def error(self, message):
         """ Shows error message """
-
-        import tkMessageBox
-        tkMessageBox.showerror('web2py start server', message)
+        if PY2:
+            import tkMessageBox as messagebox
+        else:
+            from tkinter import messagebox
+        
+        messagebox.showerror('web2py start server', message)
 
     def start(self):
         """ Starts web2py server """
@@ -508,7 +518,7 @@ class web2pyDialog(object):
                 interfaces=options.interfaces)
 
             thread.start_new_thread(self.server.start, ())
-        except Exception, e:
+        except Exception as e:
             self.button_start.configure(state='normal')
             return self.error(str(e))
 
@@ -552,14 +562,15 @@ class web2pyDialog(object):
     def update_canvas(self):
         """ Updates canvas """
 
+        httplog = os.path.join(self.options.folder, self.options.log_filename)
         try:
-            t1 = os.path.getsize('httpserver.log')
+            t1 = os.path.getsize(httplog)
         except:
             self.canvas.after(1000, self.update_canvas)
             return
 
         try:
-            fp = open('httpserver.log', 'r')
+            fp = open(httplog, 'r')
             fp.seek(self.t0)
             data = fp.read(t1 - self.t0)
             fp.close()
@@ -933,25 +944,28 @@ def console():
     sys.argv, other_args = sys.argv[:k], sys.argv[k + 1:]
     (options, args) = parser.parse_args()
     options.args = [options.run] + other_args
-    global_settings.cmd_options = options
+
+    copy_options = copy.deepcopy(options)
+    copy_options.password = '******'
+    global_settings.cmd_options = copy_options
     global_settings.cmd_args = args
 
     if options.gae:
         if not os.path.exists('app.yaml'):
             name = raw_input("Your GAE app name: ")
-            content = open(os.path.join('examples','app.example.yaml'),'rb').read()
-            open('app.yaml','wb').write(content.replace("yourappname",name))
+            content = open(os.path.join('examples', 'app.example.yaml'), 'rb').read()
+            open('app.yaml', 'wb').write(content.replace("yourappname", name))
         else:
-            print "app.yaml alreday exists in the web2py folder"
+            print("app.yaml alreday exists in the web2py folder")
         if not os.path.exists('gaehandler.py'):
-            content = open(os.path.join('handlers','gaehandler.py'),'rb').read()
-            open('gaehandler.py','wb').write(content)
+            content = open(os.path.join('handlers', 'gaehandler.py'), 'rb').read()
+            open('gaehandler.py', 'wb').write(content)
         else:
-            print "gaehandler.py alreday exists in the web2py folder"
+            print("gaehandler.py alreday exists in the web2py folder")
         sys.exit(0)
 
     try:
-        options.ips = list(set( # no duplicates
+        options.ips = list(set(  # no duplicates
             [addrinfo[4][0] for addrinfo in getipaddrinfo(socket.getfqdn())
              if not is_loopback_ip_address(addrinfo=addrinfo)]))
     except socket.gaierror:
@@ -961,7 +975,7 @@ def console():
         run_system_tests(options)
 
     if options.quiet:
-        capture = cStringIO.StringIO()
+        capture = StringIO()
         sys.stdout = capture
         logger.setLevel(logging.CRITICAL + 1)
     else:
@@ -1027,14 +1041,14 @@ def check_existent_app(options, appname):
 
 def get_code_for_scheduler(app, options):
     if len(app) == 1 or app[1] is None:
-        code = "from gluon import current;current._scheduler.loop()"
+        code = "from gluon.globals import current;current._scheduler.loop()"
     else:
-        code = "from gluon import current;current._scheduler.group_names = ['%s'];"
+        code = "from gluon.globals import current;current._scheduler.group_names = ['%s'];"
         code += "current._scheduler.loop()"
         code = code % ("','".join(app[1:]))
     app_ = app[0]
     if not check_existent_app(options, app_):
-        print "Application '%s' doesn't exist, skipping" % app_
+        print("Application '%s' doesn't exist, skipping" % app_)
         return None, None
     return app_, code
 
@@ -1049,33 +1063,40 @@ def start_schedulers(options):
     apps = [(app.strip(), None) for app in options.scheduler.split(',')]
     if options.scheduler_groups:
         apps = options.scheduler_groups
-    code = "from gluon import current;current._scheduler.loop()"
+    code = "from gluon.globals import current;current._scheduler.loop()"
     logging.getLogger().setLevel(options.debuglevel)
+    if options.folder:
+        os.chdir(options.folder)
     if len(apps) == 1 and not options.with_scheduler:
         app_, code = get_code_for_scheduler(apps[0], options)
         if not app_:
             return
-        print 'starting single-scheduler for "%s"...' % app_
+        print('starting single-scheduler for "%s"...' % app_)
         run(app_, True, True, None, False, code)
         return
+
+    # Work around OS X problem: http://bugs.python.org/issue9405
+    import urllib
+    urllib.getproxies()
+
     for app in apps:
         app_, code = get_code_for_scheduler(app, options)
         if not app_:
             continue
-        print 'starting scheduler for "%s"...' % app_
+        print('starting scheduler for "%s"...' % app_)
         args = (app_, True, True, None, False, code)
         p = Process(target=run, args=args)
         processes.append(p)
-        print "Currently running %s scheduler processes" % (len(processes))
+        print("Currently running %s scheduler processes" % (len(processes)))
         p.start()
         ##to avoid bashing the db at the same time
         time.sleep(0.7)
-        print "Processes started"
+        print("Processes started")
     for p in processes:
         try:
             p.join()
         except (KeyboardInterrupt, SystemExit):
-            print "Processes stopped"
+            print("Processes stopped")
         except:
             p.terminate()
             p.join()
@@ -1089,13 +1110,13 @@ def start(cron=True):
     (options, args) = console()
 
     if not options.nobanner:
-        print ProgramName
-        print ProgramAuthor
-        print ProgramVersion
+        print(ProgramName)
+        print(ProgramAuthor)
+        print(ProgramVersion)
 
     from pydal.drivers import DRIVERS
     if not options.nobanner:
-        print 'Database drivers available: %s' % ', '.join(DRIVERS)
+        print('Database drivers available: %s' % ', '.join(DRIVERS))
 
     # ## if -L load options from options.config file
     if options.config:
@@ -1106,18 +1127,11 @@ def start(cron=True):
                 # Jython doesn't like the extra stuff
                 options2 = __import__(options.config)
             except Exception:
-                print 'Cannot import config file [%s]' % options.config
+                print('Cannot import config file [%s]' % options.config)
                 sys.exit(1)
         for key in dir(options2):
             if hasattr(options, key):
                 setattr(options, key, getattr(options2, key))
-
-    logfile0 = os.path.join('extras','examples','logging.example.conf')
-    if not os.path.exists('logging.conf') and os.path.exists(logfile0):
-        import shutil
-        sys.stdout.write("Copying logging.conf.example to logging.conf ... ")
-        shutil.copyfile('logging.example.conf', logfile0)
-        sys.stdout.write("OK\n")
 
     # ## if -T run doctests (no cron)
     if hasattr(options, 'test') and options.test:
@@ -1162,7 +1176,7 @@ def start(cron=True):
     # ## if --softcron use softcron
     # ## use hardcron in all other cases
     if cron and options.runcron and options.softcron:
-        print 'Using softcron (but this is not very efficient)'
+        print('Using softcron (but this is not very efficient)')
         global_settings.web2py_crontype = 'soft'
     elif cron and options.runcron:
         logger.debug('Starting hardcron...')
@@ -1178,17 +1192,20 @@ def start(cron=True):
         options.taskbar = False
 
     if options.taskbar and os.name != 'nt':
-        print 'Error: taskbar not supported on this platform'
+        print('Error: taskbar not supported on this platform')
         sys.exit(1)
 
     root = None
 
-    if not options.nogui and options.password=='<ask>':
+    if not options.nogui and options.password == '<ask>':
         try:
-            import Tkinter
+            if PY2:
+                import Tkinter as tkinter
+            else:
+                import tkinter
             havetk = True
             try:
-                root = Tkinter.Tk()
+                root = tkinter.Tk()
             except:
                 pass
         except (ImportError, OSError):
@@ -1226,7 +1243,7 @@ end tell
         options.password = getpass.getpass('choose a password:')
 
     if not options.password and not options.nobanner:
-        print 'no password, no admin interface'
+        print('no password, no admin interface')
 
     # ##-X (if no tk, the widget takes care of it himself)
     if not root and options.scheduler and options.with_scheduler:
@@ -1257,12 +1274,13 @@ end tell
             message += 'use "taskkill /f /pid %i" to shutdown the web2py server\n\n' % os.getpid()
         else:
             message += 'use "kill -SIGTERM %i" to shutdown the web2py server\n\n' % os.getpid()
-        print message
+        print(message)
 
     # enhance linecache.getline (used by debugger) to look at the source file
     # if the line was not found (under py2exe & when file was modified)
     import linecache
     py2exe_getline = linecache.getline
+
     def getline(filename, lineno, *args, **kwargs):
         line = py2exe_getline(filename, lineno, *args, **kwargs)
         if not line:

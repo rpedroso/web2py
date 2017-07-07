@@ -9,21 +9,8 @@ from gluon.storage import Storage
 from gluon.html import TAG, XmlComponent, xmlescape
 from gluon.languages import lazyT
 import gluon.contrib.rss2 as rss2
-
-try:
-    # try external module
-    import simplejson as json_parser
-except ImportError:
-    try:
-        # try stdlib (Python >= 2.6)
-        import json as json_parser
-    except:
-        # fallback to pure-Python module
-        import gluon.contrib.simplejson as json_parser
-
-# simplejson >= 2.1.3 needs use_decimal = False
-# to stringify decimals
-decimal_false_option = json_parser.__version__.split('.') >= ['2', '1', '3']
+import json as json_parser
+from gluon._compat import long, to_native, unicodeT
 
 have_yaml = True
 try:
@@ -56,7 +43,7 @@ def cast_keys(o, cast=str, encoding="utf-8"):
         else:
             newobj = Storage()
         for k, v in o.items():
-            if (cast == str) and isinstance(k, unicode):
+            if (cast == str) and isinstance(k, unicodeT):
                 key = k.encode(encoding)
             else:
                 key = cast(k)
@@ -96,10 +83,12 @@ def custom_json(o):
         return int(o)
     elif isinstance(o, decimal.Decimal):
         return str(o)
+    elif isinstance(o, (bytes, bytearray)):
+        return str(o)
     elif isinstance(o, lazyT):
         return str(o)
     elif isinstance(o, XmlComponent):
-        return str(o)
+        return to_native(o.xml())
     elif isinstance(o, set):
         return list(o)
     elif hasattr(o, 'as_list') and callable(o.as_list):
@@ -130,16 +119,13 @@ def xml(value, encoding='UTF-8', key='document', quote=True):
     return ('<?xml version="1.0" encoding="%s"?>' % encoding) + str(xml_rec(value, key, quote))
 
 
-def json(value, default=custom_json):
-    if decimal_false_option:
-        value = json_parser.dumps(value, default=default, use_decimal=False)
-    else:
-        value = json_parser.dumps(value, default=default)
-
+def json(value, default=custom_json, indent=None):
+    value = json_parser.dumps(value, default=default, sort_keys=True, indent=indent)
     # replace JavaScript incompatible spacing
     # http://timelessrepo.com/json-isnt-a-javascript-subset
-    return value.replace(ur'\u2028', '\\u2028').replace(ur'\2029', '\\u2029')
-
+    # PY3 FIXME
+    # return value.replace(ur'\u2028', '\\u2028').replace(ur'\2029', '\\u2029')
+    return value
 
 def csv(value):
     return ''
@@ -174,12 +160,27 @@ def ics(events, title=None, link=None, timeshift=0, calname=True,
     s += '\nEND:VCALENDAR'
     return s
 
+def safe_encode(text):
+    if not isinstance(text, (str, unicodeT)):
+        text = str(text)
+    try:
+        text = text.encode('utf8','replace')
+    except ValueError:
+        new_text = ''
+        for c in text:
+            try:
+                new_text += c.encode('utf8')
+            except:
+                new_text += '?'
+        text = new_text
+    return text
 
 def rss(feed):
     if not 'entries' in feed and 'items' in feed:
         feed['entries'] = feed['items']
+
     def safestr(obj, key, default=''):
-        return str(obj[key]).encode('utf-8', 'replace') if key in obj else default
+        return safe_encode(obj.get(key,''))
 
     now = datetime.datetime.now()
     rss = rss2.RSS2(title=safestr(feed,'title'),
@@ -192,7 +193,7 @@ def rss(feed):
                            description=safestr(entry,'description'),
                            pubDate=entry.get('created_on', now)
                            ) for entry in feed.get('entries', [])])
-    return rss.to_xml(encoding='utf-8')
+    return rss.to_xml(encoding='utf8')
 
 
 def yaml(data):

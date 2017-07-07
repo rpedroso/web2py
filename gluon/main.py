@@ -9,10 +9,11 @@
 The gluon wsgi application
 ---------------------------
 """
+from __future__ import print_function
 
 if False: import import_all # DO NOT REMOVE PART OF FREEZE PROCESS
 import gc
-import Cookie
+
 import os
 import re
 import copy
@@ -22,19 +23,10 @@ import datetime
 import signal
 import socket
 import random
-import urllib2
 import string
 
-
-try:
-    import simplejson as sj #external installed library
-except:
-    try:
-        import json as sj #standard installed library
-    except:
-        import gluon.contrib.simplejson as sj #pure python library
-
-from thread import allocate_lock
+from gluon._compat import Cookie, urllib2
+#from thread import allocate_lock
 
 from gluon.fileutils import abspath, write_file
 from gluon.settings import global_settings
@@ -80,10 +72,9 @@ locale.setlocale(locale.LC_CTYPE, "C") # IMPORTANT, web2py requires locale "C"
 exists = os.path.exists
 pjoin = os.path.join
 
-logpath = abspath("logging.conf")
-if exists(logpath):
+try:
     logging.config.fileConfig(abspath("logging.conf"))
-else:
+except: # fails on GAE or when logfile is missing
     logging.basicConfig()
 logger = logging.getLogger("web2py")
 
@@ -154,8 +145,6 @@ def get_client(env):
     return client
 
 
-
-
 def serve_controller(request, response, session):
     """
     This function is used to generate a dynamic page.
@@ -191,8 +180,8 @@ def serve_controller(request, response, session):
     if isinstance(page, dict):
         response._vars = page
         response._view_environment.update(page)
-        run_view_in(response._view_environment)
-        page = response.body.getvalue()
+        page = run_view_in(response._view_environment)
+
     # logic to garbage collect after exec, not always, once every 100 requests
     global requests
     requests = ('requests' in globals()) and (requests + 1) % 100 or 0
@@ -222,15 +211,17 @@ class LazyWSGI(object):
         self.wsgi_environ = environ
         self.request = request
         self.response = response
+
     @property
     def environ(self):
-        if not hasattr(self,'_environ'):
+        if not hasattr(self, '_environ'):
             new_environ = self.wsgi_environ
             new_environ['wsgi.input'] = self.request.body
             new_environ['wsgi.version'] = 1
             self._environ = new_environ
         return self._environ
-    def start_response(self,status='200', headers=[], exec_info=None):
+
+    def start_response(self, status='200', headers=[], exec_info=None):
         """
         in controller you can use:
 
@@ -243,7 +234,8 @@ class LazyWSGI(object):
         self.response.headers = dict(headers)
         return lambda *args, **kargs: \
             self.response.write(escape=False, *args, **kargs)
-    def middleware(self,*middleware_apps):
+
+    def middleware(self, *middleware_apps):
         """
         In you controller use::
 
@@ -266,6 +258,7 @@ class LazyWSGI(object):
                 return app(self.environ, self.start_response)
             return lambda caller=caller, app=app: caller(app)
         return middleware
+
 
 def wsgibase(environ, responder):
     """
@@ -305,6 +298,7 @@ def wsgibase(environ, responder):
     env.web2py_version = web2py_version
     #env.update(global_settings)
     static_file = False
+    http_response = None
     try:
         try:
             try:
@@ -359,7 +353,7 @@ def wsgibase(environ, responder):
                     local_hosts = global_settings.local_hosts
                 client = get_client(env)
                 x_req_with = str(env.http_x_requested_with).lower()
-                cmd_opts = request.global_settings.cmd_options
+                cmd_opts = global_settings.cmd_options
 
                 request.update(
                     client = client,
@@ -368,13 +362,12 @@ def wsgibase(environ, responder):
                     cid = env.http_web2py_component_element,
                     is_local = (env.remote_addr in local_hosts and
                                 client == env.remote_addr),
-                    is_shell = cmd_opts and cmd_opts.shell,
-                    is_sheduler = cmd_opts and cmd_opts.scheduler,
+                    is_shell = False,
+                    is_scheduler = False,
                     is_https = env.wsgi_url_scheme in HTTPS_SCHEMES or \
                         request.env.http_x_forwarded_proto in HTTPS_SCHEMES \
                         or env.https == 'on'
                     )
-                request.compute_uuid()  # requires client
                 request.url = environ['PATH_INFO']
 
                 # ##################################################
@@ -397,7 +390,11 @@ def wsgibase(environ, responder):
                                    % 'invalid request',
                                    web2py_error='invalid application')
                 elif not request.is_local and exists(disabled):
-                    raise HTTP(503, "<html><body><h1>Temporarily down for maintenance</h1></body></html>")
+                    five0three = os.path.join(request.folder,'static','503.html')
+                    if os.path.exists(five0three):
+                        raise HTTP(503, file(five0three, 'r').read())
+                    else:
+                        raise HTTP(503, "<html><body><h1>Temporarily down for maintenance</h1></body></html>")
 
                 # ##################################################
                 # build missing folders
@@ -422,10 +419,13 @@ def wsgibase(environ, responder):
                 # ##################################################
 
                 if env.http_cookie:
-                    try:
-                        request.cookies.load(env.http_cookie)
-                    except Cookie.CookieError, e:
-                        pass  # invalid cookies
+                    for single_cookie in env.http_cookie.split(';'):
+                        single_cookie = single_cookie.strip()
+                        if single_cookie:
+                            try:
+                                request.cookies.load(single_cookie)
+                            except Cookie.CookieError:
+                                pass  # single invalid cookie ignore
 
                 # ##################################################
                 # try load session or create new session file
@@ -444,8 +444,8 @@ def wsgibase(environ, responder):
                     gluon.debug.dbg.do_debug(mainpyfile=request.folder)
 
                 serve_controller(request, response, session)
-
-            except HTTP, http_response:
+            except HTTP as hr:
+                http_response = hr
 
                 if static_file:
                     return http_response.to(responder, env=env)
@@ -453,12 +453,13 @@ def wsgibase(environ, responder):
                 if request.body:
                     request.body.close()
 
-                if hasattr(current,'request'):
+                if hasattr(current, 'request'):
 
                     # ##################################################
                     # on success, try store session in database
                     # ##################################################
-                    session._try_store_in_db(request, response)
+                    if not env.web2py_disable_session:
+                        session._try_store_in_db(request, response)
 
                     # ##################################################
                     # on success, commit database
@@ -475,8 +476,8 @@ def wsgibase(environ, responder):
                     # if session not in db try store session on filesystem
                     # this must be done after trying to commit database!
                     # ##################################################
-
-                    session._try_store_in_cookie_or_file(request, response)
+                    if not env.web2py_disable_session:
+                        session._try_store_in_cookie_or_file(request, response)
 
                     # Set header so client can distinguish component requests.
                     if request.cid:
@@ -486,11 +487,10 @@ def wsgibase(environ, responder):
                     if request.ajax:
                         if response.flash:
                             http_response.headers['web2py-component-flash'] = \
-                                urllib2.quote(xmlescape(response.flash)\
-                                                  .replace('\n',''))
+                                urllib2.quote(xmlescape(response.flash).replace(b'\n', b''))
                         if response.js:
                             http_response.headers['web2py-component-command'] = \
-                                urllib2.quote(response.js.replace('\n',''))
+                                urllib2.quote(response.js.replace('\n', ''))
 
                     # ##################################################
                     # store cookies in headers
@@ -501,7 +501,7 @@ def wsgibase(environ, responder):
 
                 ticket = None
 
-            except RestrictedError, e:
+            except RestrictedError as e:
 
                 if request.body:
                     request.body.close()
@@ -576,9 +576,9 @@ def save_password(password, port):
         chars = string.letters + string.digits
         password = ''.join([random.choice(chars) for _ in range(8)])
         cpassword = CRYPT()(password)[0]
-        print '******************* IMPORTANT!!! ************************'
-        print 'your admin password is "%s"' % password
-        print '*********************************************************'
+        print('******************* IMPORTANT!!! ************************')
+        print('your admin password is "%s"' % password)
+        print('*********************************************************')
     elif password == '<recycle>':
         # reuse the current password if any
         if exists(password_file):
@@ -680,6 +680,7 @@ def appfactory(wsgiapp=wsgibase,
 
     return app_with_logging
 
+
 class HttpServer(object):
     """
     the web2py web server (Rocket)
@@ -714,9 +715,9 @@ class HttpServer(object):
             # if interfaces is specified, it must be tested for rocket parameter correctness
             # not necessarily completely tested (e.g. content of tuples or ip-format)
             import types
-            if isinstance(interfaces, types.ListType):
+            if isinstance(interfaces, list):
                 for i in interfaces:
-                    if not isinstance(i, types.TupleType):
+                    if not isinstance(i, tuple):
                         raise "Wrong format for rocket interfaces parameter - see http://packages.python.org/rocket/"
             else:
                 raise "Wrong format for rocket interfaces parameter - see http://packages.python.org/rocket/"
